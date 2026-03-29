@@ -10,8 +10,10 @@ This repository contains scripts for [Seti Astro Suite Pro](https://www.setiastr
 
 | File | Description |
 |------|-------------|
-| `Remove_Banding.py` | Removing banding noise |
+| `Remove_Banding.py` | Removing linear banding noise |
 | `Star_Reducer.py` | Star reduction utility |
+| `ContinuumSubtraction` | Linear continuum subtraction tool |
+| `template.py` | Template for building modal dialogs for SASpro |
 
 ## Development Notes
 
