@@ -1,0 +1,10 @@
+{
+    "python.defaultInterpreterPath": "C:/Users/dave/AppData/Local/SASpro/runtime/py312/venv/Scripts/python.exe",
+    "python.analysis.extraPaths": [
+        "C:/Users/dave/AppData/Local/SASpro/runtime/py312/venv/Lib/site-packages",
+        "C:/Users/dave/AppData/Local/SASpro/runtime/py312/venv/Lib",
+        "C:/Users/dave/AppData/Local/SASpro/runtime/py312/venv/share",
+        "C:/Program Files/SetiAstroSuitePro/_internal",
+        "C:/Python312/Lib/site-packages"
+    ]
+}
