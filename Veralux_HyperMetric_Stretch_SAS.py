@@ -117,7 +117,7 @@ from PyQt6.QtGui import (QImage, QPixmap, QPainter, QColor, QWheelEvent, QMouseE
 #  SASPRO SCRIPT METADATA
 # ---------------------
 SCRIPT_NAME = "VeraLux HyperMetric Stretch"
-SCRIPT_GROUP = "Tools"
+SCRIPT_GROUP = "VeraLux"
 
 VERSION = "1.5.1"
 
