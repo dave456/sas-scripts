@@ -18,7 +18,7 @@ from astropy.io import fits
 # =========================
 # SASpro Script Metadata
 # =========================
-SCRIPT_NAME     = "Remove Bandling"
+SCRIPT_NAME     = "Remove Banding"
 SCRIPT_GROUP    = "Tools"
 SCRIPT_SHORTCUT = ""
 
