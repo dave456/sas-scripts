@@ -9,8 +9,8 @@ import os
 import numpy as np
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFileDialog, QMessageBox, QGroupBox, QSlider
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QFileDialog, QMessageBox, QGroupBox, QSlider, QComboBox
 )
 from PyQt6.QtCore import Qt
 from astropy.io import fits
@@ -34,8 +34,7 @@ class NbMixerWindow(QDialog):
         self.setFixedWidth(600)
 
         # initialize some member variables
-        self.ha_file = ""
-        self.oiii_file = ""
+        self.combos = {}   # component key -> source combo box
         # percentage of each component in each output channel (may exceed 100)
         self.mix = {
             "red": {"ha": 100, "oiii": 0},
@@ -59,33 +58,27 @@ class NbMixerWindow(QDialog):
         comps_box = QGroupBox(" Components ")
         comps_box.setLayout(QVBoxLayout())
     
-        # add HA row
-        ha_row = QHBoxLayout()
-        ha_label = QLabel("Ha:")
-        ha_label.setFixedWidth(LABEL_WIDTH)
-        ha_row.addWidget(ha_label)
-        self.ha_line = QLineEdit()
-        ha_row.addWidget(self.ha_line, 1)
-        ha_btn = QPushButton("Select")
-        ha_btn.clicked.connect(lambda: self.on_select_file("ha_file", self.ha_line))
-        ha_row.addWidget(ha_btn)
-        ha_row.setContentsMargins(0, 0, 0, 0)
-        ha_row.setSpacing(6)
-        comps_box.layout().addLayout(ha_row)
+        # add HA and OIII rows, each with a source combo (open views or a file)
+        for comp, comp_name in (("ha", "Ha"), ("oiii", "OIII")):
+            row = QHBoxLayout()
+            label = QLabel(f"{comp_name}:")
+            label.setFixedWidth(LABEL_WIDTH)
+            row.addWidget(label)
+            combo = QComboBox()
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            self.combos[comp] = combo
+            row.addWidget(combo, 1)
+            file_btn = QPushButton("File...")
+            file_btn.clicked.connect(lambda _checked=False, k=comp: self.on_select_file(k))
+            row.addWidget(file_btn)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            comps_box.layout().addLayout(row)
 
-        # add OIII row
-        oiii_row = QHBoxLayout()
-        oiii_label = QLabel("OIII:")
-        oiii_label.setFixedWidth(LABEL_WIDTH)
-        oiii_row.addWidget(oiii_label)
-        self.oiii_line = QLineEdit()
-        oiii_row.addWidget(self.oiii_line, 1)
-        oiii_btn = QPushButton("Select")
-        oiii_btn.clicked.connect(lambda: self.on_select_file("oiii_file", self.oiii_line))
-        oiii_row.addWidget(oiii_btn)
-        oiii_row.setContentsMargins(0, 0, 0, 0)
-        oiii_row.setSpacing(6)
-        comps_box.layout().addLayout(oiii_row)
+        refresh_btn = QPushButton("Refresh views")
+        refresh_btn.clicked.connect(self.refresh_views)
+        comps_box.layout().addWidget(refresh_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        self.refresh_views()
 
         layout.addWidget(comps_box)
         layout.addSpacing(10)
@@ -125,12 +118,41 @@ class NbMixerWindow(QDialog):
         layout.addWidget(blend_btn, alignment=Qt.AlignmentFlag.AlignCenter)
     
     
-    def on_select_file(self, file_attr: str, lineedit: QLineEdit):
+    def refresh_views(self):
+        """ Repopulate the source combos with open SASpro views, keeping any chosen file """
+        views = [(v.get("name") or v.get("title") or str(v.get("uid")), v.get("uid"))
+                 for v in self.ctx.list_views()]
+        for combo in self.combos.values():
+            current = combo.currentData()
+            combo.clear()
+            combo.addItem("-- select view or file --", None)
+            for name, uid in views:
+                combo.addItem(name, ("view", uid))
+            if current and current[0] == "file":
+                combo.addItem(os.path.basename(current[1]), current)
+            index = combo.findData(current) if current else 0
+            combo.setCurrentIndex(max(index, 0))
+
+    def on_select_file(self, comp):
         """ File selection button callback """
         path, _ = QFileDialog.getOpenFileName(self, "Select file", "", "FITS files (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.fz2);;All files (*)")
         if path:
-            lineedit.setText(os.path.basename(path))
-            setattr(self, file_attr, path)
+            combo = self.combos[comp]
+            data = ("file", path)
+            index = combo.findData(data)
+            if index < 0:
+                combo.addItem(os.path.basename(path), data)
+                index = combo.count() - 1
+            combo.setCurrentIndex(index)
+
+    def load_source(self, comp):
+        """ Returns (pixel data, FITS header or None) from the selected view or file """
+        kind, value = self.combos[comp].currentData()
+        if kind == "file":
+            with fits.open(value) as hdul:
+                return hdul[0].data, hdul[0].header
+        img = np.asarray(self.ctx.get_image_for(value))
+        return (img.mean(axis=2) if img.ndim == 3 else img), None
 
     def on_slider_changed(self, channel, comp, comp_name, label, value):
         """ Any mixer slider changed """
@@ -139,23 +161,14 @@ class NbMixerWindow(QDialog):
 
     def on_blend(self):
         """ Blend button callback """
-        if not self.ha_file or not self.oiii_file:
-            QMessageBox.warning(self, "Warning", "Please select both Ha and OIII files")
+        if not all(c.currentData() for c in self.combos.values()):
+            QMessageBox.warning(self, "Warning", "Please select both Ha and OIII views or files")
             return
 
         try:
             # Load images
-            ha_data = fits.getdata(self.ha_file)
-            oiii_data = fits.getdata(self.oiii_file)
-
-            # TODO: Some normalization ideas...
-            #pHa = np.percentile(ha_data, 99)
-            #pO = np.percentile(oiii_data, 99)
-            #Ha_sig = np.median(ha_data) - np.median(bg_ha_data)
-            #OIII_sig = np.median(oiii_data) - median(bg_oiii_data)
-            #scale = pHa / pO
-            #print(f"scale: {scale}")
-            #oiii_data = oiii_data * scale
+            ha_data, ha_header = self.load_source("ha")
+            oiii_data, _ = self.load_source("oiii")
 
             # Create RGB channels
             channels = [(self.mix[c]["ha"] / 100) * ha_data + (self.mix[c]["oiii"] / 100) * oiii_data
@@ -170,9 +183,8 @@ class NbMixerWindow(QDialog):
             # the user to adjust the mixer accordingly.
             np.minimum(combined_data, 1.0, out=combined_data)
 
-            # grab the fits header from the Ha file
-            with fits.open(self.ha_file) as hdul:
-                header = hdul[0].header
+            # use the Ha file's fits header; views have none
+            header = ha_header if ha_header is not None else fits.Header()
             r, g, b = self.mix["red"], self.mix["green"], self.mix["blue"]
             header.add_history(f"NarrowBandMixer (Ha/OII) mix: R({r['ha']}%/{r['oiii']}%), "
                                f"G({g['ha']}%/{g['oiii']}%), B({b['ha']}%/{b['oiii']}%)")

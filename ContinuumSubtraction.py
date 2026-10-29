@@ -10,7 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from PyQt6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFileDialog, QMessageBox, QGroupBox, QCheckBox, QSlider,
     QComboBox, QMainWindow
 )
@@ -35,18 +35,8 @@ class CSDialog(QDialog):
         self.ctx = ctx
         self.setWindowTitle(f"Continuum Subtraction")
         self.setFixedWidth(660)
+        self.combos = {}   # component key -> source combo box
         self.CreateWidgets()
-
-        # initialize some member variables
-        self.r_file = ""
-        self.g_file = ""
-        self.b_file = ""
-        self.ha_file = ""
-        self.sii_file = ""
-        self.oiii_file = ""
-        self.emission_file = ""
-        self.component_file = ""
-        self.cs_file = ""
 
     def CreateWidgets(self):
         layout = QVBoxLayout()
@@ -70,48 +60,23 @@ class CSDialog(QDialog):
         self.cont_desc = QLabel("Color Components")
         right_col.addWidget(self.cont_desc, alignment=Qt.AlignmentFlag.AlignLeft)
 
-        self.r_line = QLineEdit()
-        self.r_line.setReadOnly(True)
-        row, btn = self.AddFileRow("R:", self.r_line, COMPONENT_LABEL_WIDTH)
-        btn.clicked.connect(lambda: self.OnSelectFile("r_file", self.r_line))
-        right_col.addLayout(row)
-
-        self.g_line = QLineEdit()
-        self.g_line.setReadOnly(True)
-        row, btn = self.AddFileRow("G:", self.g_line, COMPONENT_LABEL_WIDTH)
-        btn.clicked.connect(lambda: self.OnSelectFile("g_file", self.g_line))
-        right_col.addLayout(row)
-
-        self.b_line = QLineEdit()
-        self.b_line.setReadOnly(True)
-        row, btn = self.AddFileRow("B:", self.b_line, COMPONENT_LABEL_WIDTH)
-        btn.clicked.connect(lambda: self.OnSelectFile("b_file", self.b_line))
-        right_col.addLayout(row)
+        for key, text in (("r", "R:"), ("g", "G:"), ("b", "B:")):
+            right_col.addLayout(self.AddSourceRow(key, text, COMPONENT_LABEL_WIDTH))
 
         self.emission_desc = QLabel("Emission Line Components", alignment=Qt.AlignmentFlag.AlignLeft)
         left_col.addWidget(self.emission_desc)
 
-        self.ha_line = QLineEdit()
-        self.ha_line.setReadOnly(True)
-        row, btn = self.AddFileRow("Ha:", self.ha_line, EMISSION_LABEL_WIDTH)
-        btn.clicked.connect(lambda: self.OnSelectFile("ha_file", self.ha_line))
-        left_col.addLayout(row)
-
-        self.sii_line = QLineEdit()
-        self.sii_line.setReadOnly(True)
-        row, btn = self.AddFileRow("SII:", self.sii_line, EMISSION_LABEL_WIDTH)
-        btn.clicked.connect(lambda: self.OnSelectFile("sii_file", self.sii_line))
-        left_col.addLayout(row)
-
-        self.oiii_line = QLineEdit()
-        self.oiii_line.setReadOnly(True)
-        row, btn = self.AddFileRow("OIII:", self.oiii_line, EMISSION_LABEL_WIDTH)
-        btn.clicked.connect(lambda: self.OnSelectFile("oiii_file", self.oiii_line))
-        left_col.addLayout(row)
+        for key, text in (("ha", "Ha:"), ("sii", "SII:"), ("oiii", "OIII:")):
+            left_col.addLayout(self.AddSourceRow(key, text, EMISSION_LABEL_WIDTH))
 
         comps_box.layout().addLayout(left_col, 1)
         comps_box.layout().addLayout(right_col, 1)
         layout.addWidget(comps_box)
+
+        refresh_btn = QPushButton("Refresh views")
+        refresh_btn.clicked.connect(self.RefreshViews)
+        layout.addWidget(refresh_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        self.RefreshViews()
         layout.addSpacing(10)
 
         # CS generation group
@@ -285,59 +250,94 @@ class CSDialog(QDialog):
             "This allows you to customize the color balance of the blended image.\n\n"
         )
 
-    def AddFileRow(self, label_text, lineedit, label_width):
-        """ Helper to create a file selection row """
+    def AddSourceRow(self, key, label_text, label_width):
+        """ Helper to create a row with a source combo (open views or a file) """
         row = QHBoxLayout()
         label = QLabel(label_text)
         label.setFixedWidth(label_width)
         row.addWidget(label)
-        row.addWidget(lineedit, 1)
-        btn = QPushButton("Select")
+        combo = QComboBox()
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(8)
+        self.combos[key] = combo
+        row.addWidget(combo, 1)
+        btn = QPushButton("File...")
+        btn.clicked.connect(lambda _checked=False, k=key: self.OnSelectFile(k))
         row.addWidget(btn)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
-        return row, btn
+        return row
+
+    def RefreshViews(self):
+        """ Repopulate the source combos with open SASpro views, keeping any chosen file """
+        views = [(v.get("name") or v.get("title") or str(v.get("uid")), v.get("uid"))
+                 for v in self.ctx.list_views()]
+        for combo in self.combos.values():
+            current = combo.currentData()
+            combo.clear()
+            combo.addItem("-- select view or file --", None)
+            for name, uid in views:
+                combo.addItem(name, ("view", uid))
+            if current and current[0] == "file":
+                combo.addItem(os.path.basename(current[1]), current)
+            index = combo.findData(current) if current else 0
+            combo.setCurrentIndex(max(index, 0))
+
+    def LoadSource(self, key):
+        """ Returns (pixel data, FITS header or None) from the selected view or file """
+        kind, value = self.combos[key].currentData()
+        if kind == "file":
+            with fits.open(value) as hdul:
+                return hdul[0].data, hdul[0].header
+        img = np.asarray(self.ctx.get_image_for(value))
+        return (img.mean(axis=2) if img.ndim == 3 else img), None
+
+    def EmissionKeys(self):
+        """ Returns (emission key, matching color component key) for the selected emission line """
+        return {"Ha": ("ha", "r"), "SII": ("sii", "g"), "OIII": ("oiii", "b")}[self.emission_combo.currentText()]
+
+    def HasSources(self, *keys):
+        return all(self.combos[k].currentData() for k in keys)
     
     def OnEmissionChanged(self, text: str):
         """ Drop-down callback for selection change"""
         if text == "Ha":
-            self.emission_file = self.ha_file
-            self.component_file = self.r_file
             self.red_slider.setValue(100)
             self.green_slider.setValue(0)
             self.blu_slider.setValue(0)
         if text == "SII":
-            self.emission_file = self.sii_file
-            self.component_file = self.g_file
             self.red_slider.setValue(0)
             self.green_slider.setValue(100)
             self.blu_slider.setValue(0)
         if text == "OIII":
-            self.emission_file = self.oiii_file
-            self.component_file = self.b_file
             self.red_slider.setValue(0)
             self.green_slider.setValue(0)
             self.blu_slider.setValue(100)
 
-    def OnSelectFile(self, file_attr: str, lineedit: QLineEdit):
+    def OnSelectFile(self, key):
         """ File selection button callback """
         path, _ = QFileDialog.getOpenFileName(self, "Select file", "", "FITS files (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.fz2);;All files (*)")
         if path:
-            lineedit.setText(os.path.basename(path))
-            setattr(self, file_attr, path)
-            self.OnEmissionChanged(self.emission_combo.currentText())
+            combo = self.combos[key]
+            data = ("file", path)
+            index = combo.findData(data)
+            if index < 0:
+                combo.addItem(os.path.basename(path), data)
+                index = combo.count() - 1
+            combo.setCurrentIndex(index)
 
     def OnGenerate(self):
         """ Generate button callback. Generate the continuum subtracted image, and load into SASpro """
         c = self.c_slider.value() / 10000.0
+        emission_key, component_key = self.EmissionKeys()
 
-        if not self.component_file or not self.emission_file:
-            QMessageBox.warning(self, "Missing files", "Please select both Emission and Color component files.")
+        if not self.HasSources(emission_key, component_key):
+            QMessageBox.warning(self, "Missing sources", "Please select both Emission and Color component views or files.")
             return
 
         try:
-            component_data = fits.getdata(self.component_file)
-            emission_data = fits.getdata(self.emission_file)
+            component_data, _ = self.LoadSource(component_key)
+            emission_data, _ = self.LoadSource(emission_key)
             cs_data = emission_data - c * component_data
  
             # Load into SASpro
@@ -351,7 +351,7 @@ class CSDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Error generating continuum subtracted image:\n{e}")
 
     def OnBlend(self):
-        if not all([self.r_file, self.g_file, self.b_file]):
+        if not self.HasSources("r", "g", "b"):
             QMessageBox.warning(self, "Missing components", "Please select R, G, B and ensure the continuum subtracted image is generated.")
             return
 
@@ -368,9 +368,10 @@ class CSDialog(QDialog):
                 return
 
             cs_data = cs_doc.image.astype(np.float32)
-            r_data = fits.getdata(self.r_file).astype(np.float32)
-            g_data = fits.getdata(self.g_file).astype(np.float32)
-            b_data = fits.getdata(self.b_file).astype(np.float32)
+            r_data, r_header = self.LoadSource("r")
+            r_data = r_data.astype(np.float32)
+            g_data = self.LoadSource("g")[0].astype(np.float32)
+            b_data = self.LoadSource("b")[0].astype(np.float32)
 
             cs_median = np.median(cs_data)
             new_rdata = r_data + (cs_data - cs_median) * q * red_adjust
@@ -380,12 +381,12 @@ class CSDialog(QDialog):
             # Ensure output shape (3, height, width) as SASpro expects planes-first format
             combined_data = np.array([new_rdata, new_gdata, new_bdata], dtype=np.float32)
 
-            # grab the fits header from one of the input files (R)
-            with fits.open(self.r_file) as hdul:
-                header = hdul[0].header
+            # use the R file's fits header; views have none
+            header = r_header if r_header is not None else fits.Header()
 
             c = self.c_slider.value() / 10000.0
-            header.add_history(f"Continuum subtracted: emission={os.path.basename(self.emission_file)} c={c:.4f}")
+            emission_name = self.combos[self.EmissionKeys()[0]].currentText()
+            header.add_history(f"Continuum subtracted: emission={emission_name} c={c:.4f}")
             combined_data = np.transpose(combined_data, (1, 2, 0))
 
             # update or open our blended view in SASpro
@@ -399,13 +400,15 @@ class CSDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Error during blending:\n{e}")
 
     def OnEstimate(self):
-        # compute the median of the emission file
-        emission_data = fits.getdata(self.emission_file)
-        c_median = np.median(emission_data)
+        emission_key, component_key = self.EmissionKeys()
+        if not self.HasSources(emission_key, component_key):
+            QMessageBox.warning(self, "Missing sources", "Please select both Emission and Color component views or files.")
+            return
 
         # load the narrowband and continuum data
-        narrowband_data = fits.getdata(self.emission_file)
-        continuum_data = fits.getdata(self.component_file)
+        narrowband_data, _ = self.LoadSource(emission_key)
+        continuum_data, _ = self.LoadSource(component_key)
+        c_median = np.median(narrowband_data)
 
         # verify shapes match, e.g. same dimensions, mono images, etc.
         if continuum_data.shape != narrowband_data.shape:
