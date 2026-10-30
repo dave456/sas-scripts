@@ -9,7 +9,7 @@ import os
 import numpy as np
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, 
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QComboBox, QMessageBox, QGroupBox, QSlider, QRadioButton,
     QSpinBox, QFileDialog
 )
@@ -34,7 +34,6 @@ class StarReducerWindow(QDialog):
         self.ctx = ctx
         self.setWindowTitle(f"Bill Blanshan's Star Reducer")
         self.setFixedWidth(550)
-        self.starless_file_path = ""
         self.CreateWidgets()
 
     def CreateWidgets(self):
@@ -132,24 +131,24 @@ class StarReducerWindow(QDialog):
         layout.addWidget(iter_params_box)
         layout.addSpacing(10)
 
-        starless_path_box = QGroupBox(" Starless Image Path ")
+        starless_path_box = QGroupBox(" Starless Image ")
         starless_path_frame = QVBoxLayout()
         starless_path_box.setLayout(starless_path_frame)
         starless_path_box.setContentsMargins(10, 25, 10, 15)
 
+        # source combo holds open SASpro views or a chosen file
         starless_row = QHBoxLayout()
-        self.starless_path_edit = QLineEdit()
-        starless_row.addWidget(self.starless_path_edit, 1)
-        starless_btn = QPushButton("Select")
-        starless_btn.clicked.connect(self.OnSelectStarless)
-        starless_row.addWidget(starless_btn)
+        self.starless_combo = QComboBox()
+        self.starless_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        starless_row.addWidget(self.starless_combo, 1)
+        file_btn = QPushButton("File...")
+        file_btn.clicked.connect(self.OnSelectStarless)
+        starless_row.addWidget(file_btn)
+        refresh_btn = QPushButton("Refresh views")
+        refresh_btn.clicked.connect(self.RefreshViews)
+        starless_row.addWidget(refresh_btn)
         starless_path_box.layout().addLayout(starless_row)
-
-        starless_info_row = QHBoxLayout()
-        self.starless_info = QLabel("")
-        starless_info_row.addWidget(self.starless_info)
-        self.starless_info.setText("  No starless image selected.")
-        starless_path_box.layout().addLayout(starless_info_row)
+        self.RefreshViews()
 
         layout.addWidget(starless_path_box)
         layout.addSpacing(10)
@@ -183,18 +182,34 @@ class StarReducerWindow(QDialog):
             self.iter_cnt.setEnabled(False)
             self.iter_type.setEnabled(False)
 
+    def RefreshViews(self):
+        """Repopulate the starless combo with open SASpro views, keeping any chosen file"""
+        combo = self.starless_combo
+        current = combo.currentData()
+        combo.clear()
+        combo.addItem("-- select view or file --", None)
+        for v in self.ctx.list_views():
+            combo.addItem(v.get("name") or v.get("title") or str(v.get("uid")), ("view", v.get("uid")))
+        if current and current[0] == "file":
+            combo.addItem(os.path.basename(current[1]), current)
+        combo.setCurrentIndex(max(combo.findData(current), 0) if current else 0)
+
     def OnSelectStarless(self):
         """Open file dialog to select starless image"""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select starless image", "", "FITS files (*.fits);;All files (*.*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select starless image", "", "FITS files (*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.fz2);;All files (*)")
         if file_path:
-            self.starless_path_edit.setText(os.path.basename(file_path))
-            self.starless_file_path = file_path
-            self.starless_info.setText("  Starless image selected.")
+            combo = self.starless_combo
+            data = ("file", file_path)
+            index = combo.findData(data)
+            if index < 0:
+                combo.addItem(os.path.basename(file_path), data)
+                index = combo.count() - 1
+            combo.setCurrentIndex(index)
 
     def OnApply(self):
         """Apply button callback"""
-        if not self.starless_file_path:
-            QMessageBox.warning(self, "No starless image", "Please select a starless image before applying star reduction.")
+        if not self.starless_combo.currentData():
+            QMessageBox.warning(self, "No starless image", "Please select a starless view or file before applying star reduction.")
             return
         self.ReduceStars()
 
@@ -209,10 +224,15 @@ class StarReducerWindow(QDialog):
             if needs_transpose and is_color:
                 img = np.transpose(img, (2, 0, 1))
 
-            with fits.open(self.starless_file_path) as hdul:
-                starless = hdul[0].data
-                if starless.dtype != np.float32:
-                    starless = np.array(starless, dtype=np.float32)
+            kind, value = self.starless_combo.currentData()
+            if kind == "file":
+                with fits.open(value) as hdul:
+                    starless = np.array(hdul[0].data, dtype=np.float32)
+            else:
+                # views are HWC like the image, so apply the same layout change
+                starless = np.array(self.ctx.get_image_for(value), dtype=np.float32)
+                if needs_transpose and is_color and starless.ndim == 3:
+                    starless = np.transpose(starless, (2, 0, 1))
 
             # we can't allow 0 or 1 for reduction value, so we clamp to 0.01 and 0.99
             rv = self.strength_slider.value() / 100.0
@@ -297,7 +317,7 @@ class StarReducerWindow(QDialog):
 
     def OnHelp(self):
         QMessageBox.information(self, "Help", "This tool applies Bill Blanshan's star reduction methods to an image.\n\n"
-            "1. Generate and/or select a starless image using the tool of your choice.\n"
+            "1. Generate a starless image using the tool of your choice, then select it as an open view or a file.\n"
             "2. Choose the reduction method (MTF or iterative).\n"
             "3. Adjust parameters as needed.\n"
             "4. Click Apply to perform the star reduction on the current image.\n\n"
